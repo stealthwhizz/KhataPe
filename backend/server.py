@@ -30,6 +30,7 @@ app = FastAPI()
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 S2_STREAM = "transactions"
+SAFEDEP_REPORT_PATH = Path("/app/safedep_report.json")
 
 
 # Define Models
@@ -178,6 +179,37 @@ def push_transaction_to_s2(tx: Dict[str, Any]) -> None:
 def verify_razorpay_signature(raw_body: bytes, signature: str, secret: str) -> bool:
     expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
+
+
+def get_security_report_status() -> Dict[str, Any]:
+    if not SAFEDEP_REPORT_PATH.exists():
+        return {
+            "status": "red",
+            "critical_count": 0,
+            "scan_available": False,
+        }
+
+    try:
+        report = json.loads(SAFEDEP_REPORT_PATH.read_text())
+    except Exception:
+        return {
+            "status": "red",
+            "critical_count": 0,
+            "scan_available": False,
+        }
+
+    critical_count = 0
+    for package in report.get("packages", []):
+        for vulnerability in package.get("vulnerabilities", []):
+            for severity in vulnerability.get("severities", []):
+                if str(severity.get("risk", "")).upper() == "CRITICAL":
+                    critical_count += 1
+
+    return {
+        "status": "green" if critical_count == 0 else "red",
+        "critical_count": critical_count,
+        "scan_available": True,
+    }
 
 
 def normalize_amount(value: Any) -> Optional[float]:
@@ -408,6 +440,11 @@ async def get_recent_transactions(limit: int = 50):
     safe_limit = max(1, min(limit, 200))
     transactions = await db.transactions.find({}, {"_id": 0}).sort("timestamp", -1).limit(safe_limit).to_list(safe_limit)
     return {"transactions": transactions}
+
+
+@api_router.get("/security/status")
+async def get_security_status():
+    return get_security_report_status()
 
 
 @app.on_event("startup")

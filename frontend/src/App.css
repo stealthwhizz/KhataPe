@@ -157,6 +157,32 @@ body {
   padding: 1.6rem 1rem;
 }
 
+.dashboard-footer {
+  margin-top: 1rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.security-badge {
+  font-size: 0.78rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid transparent;
+}
+
+.security-badge.green {
+  color: #dbffe7;
+  background: rgba(35, 153, 77, 0.32);
+  border-color: rgba(83, 221, 141, 0.5);
+}
+
+.security-badge.red {
+  color: #ffe2e2;
+  background: rgba(169, 49, 49, 0.35);
+  border-color: rgba(255, 135, 135, 0.5);
+}
+
 @media (max-width: 860px) {
   .app-shell {
     width: min(1100px, 95vw);

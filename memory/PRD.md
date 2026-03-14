@@ -1,59 +1,63 @@
-# PRD: Live Transaction Streaming with S2 + Webhook Hardening
+# PRD: SafeDep Security Scan Integration + Dashboard Security Badge
 
 ## Original Problem Statement
-Add real-time transaction streaming using S2.dev.
-Whenever a webhook fires (Razorpay payment captured OR WhatsApp invoice parsed), push a live transaction event so the dashboard updates instantly without waiting for the 5-second poll.
-Call push logic in both `/webhook/razorpay` and `/webhook/whatsapp` right after `log_transaction()`.
-In React dashboard, subscribe to live stream and prepend rows instantly while keeping 5-second polling fallback.
-Add `S2_AUTH_TOKEN` and `S2_BASIN=gst-transactions` placeholders in env.
+Run a SafeDep security scan on backend requirements, add scan tooling to project, generate JSON report, add `safedep_scan.sh` at project root, add `safedep_report.json` to `.gitignore`, and display a small Security badge in dashboard footer:
+- Green: no critical vulnerabilities
+- Red: any critical vulnerabilities
+The app must not fail startup if scanning/report generation fails.
 
 ## Architecture Decisions
-- Kept existing stack as requested: **Python FastAPI backend + React frontend**.
-- Added backend S2 integration with resilient behavior:
-  - Initialize stream at startup (`transactions` stream)
-  - Push event payload after successful transaction logging in both webhooks
-  - Never break webhook processing if S2 is unavailable or token is empty
-- Added new Razorpay webhook route and hardened it with signature verification (`X-Razorpay-Signature` + `RAZORPAY_WEBHOOK_SECRET`).
-- Added polling API `/api/transactions/recent` for dashboard fallback.
-- Frontend dashboard now combines:
-  - live subscription path via S2 SDK client utility
-  - 5-second polling fallback + manual refresh
+- Target manifest confirmed: `/app/backend/requirements.txt`.
+- Script location confirmed: `/app/safedep_scan.sh`.
+- Frontend badge reads security status via backend API (`/api/security/status`) instead of direct file access.
+- Runtime constraints handled safely:
+  - `pip install safedep-cli` unavailable in this environment
+  - Docker unavailable in this environment
+  - Added tertiary fallback to SafeDep `vet` binary (`/app/bin/vet`) in script
+- Security status endpoint is defensive: missing/malformed report returns stable `red` status and never breaks app flow.
 
 ## What’s Implemented
-- Backend (`/app/backend/server.py`)
-  - Added S2 helpers: `init_s2_stream()`, `push_transaction_to_s2()`
-  - Added `verify_razorpay_signature()` and secure Razorpay webhook validation
-  - Added `/api/webhook/razorpay` + `/webhook/razorpay`
-  - Updated WhatsApp webhook to push stream events post-logging
-  - Added `/api/transactions/recent?limit=` endpoint
-  - Unified transaction persistence into `db.transactions`
-- Env updates
-  - `backend/.env`: `S2_AUTH_TOKEN`, `S2_BASIN`, `RAZORPAY_WEBHOOK_SECRET`
-  - `frontend/.env`: `REACT_APP_S2_AUTH_TOKEN`, `REACT_APP_S2_BASIN`
-- Frontend
-  - Added S2 stream utility: `/app/frontend/src/lib/stream.js`
-  - Replaced starter UI with live transactions dashboard in `/app/frontend/src/App.js`
-  - Added responsive styling in `/app/frontend/src/App.css`
-  - Added required `data-testid` attributes on interactive and critical UI elements
-- Tests
-  - Existing and added pytest suites pass (11 total)
-  - Verified valid and invalid Razorpay signature behavior via live curl checks
-  - Verified dashboard rendering and polling fallback in browser screenshot flow
+- Scanning and report generation:
+  - Installed SafeDep `vet` CLI binary locally (`/app/bin/vet`) for fallback scanning
+  - Executed scan against `/app/backend/requirements.txt`
+  - Generated `/app/safedep_report.json`
+- New script:
+  - Added `/app/safedep_scan.sh` (executable)
+  - Flow: `safedep` command first → Docker fallback → local `vet` fallback
+  - Uses non-fatal behavior (`|| true`) so scan failures do not block app runtime
+- Backend:
+  - Added `GET /api/security/status` in `backend/server.py`
+  - Parses `/app/safedep_report.json` and counts critical risks
+  - Returns `{ status: green|red, critical_count, scan_available }`
+- Frontend:
+  - Added footer security badge in `frontend/src/App.js`
+  - Badge color/text driven by `/api/security/status` response
+  - Added styles in `frontend/src/App.css` for green/red badge
+- Repo hygiene:
+  - Added `safedep_report.json` to `/app/.gitignore`
+
+## Verification Completed
+- Script execution verified from `/app/safedep_scan.sh`.
+- API verified:
+  - With current report: returns `red` and `critical_count=1`
+  - With missing report: returns `red`, `critical_count=0`, `scan_available=false`
+- Frontend verified via browser automation:
+  - Footer badge renders and matches backend status
+- Full backend tests pass: 18/18.
 
 ## Prioritized Backlog
 ### P0
-- Replace placeholder secrets with production values (`S2_AUTH_TOKEN`, `RAZORPAY_WEBHOOK_SECRET`).
-- Validate true end-to-end S2 live delivery using a valid token and real webhook traffic.
+- Resolve critical vulnerability flagged in `python-jose` by upgrading and validating compatibility.
+- Re-run scan after dependency updates to move badge from red to green.
 
 ### P1
-- Add WhatsApp/Twilio signature validation parity with Razorpay hardening.
-- Add dedupe key strategy across sources for strict idempotency under retries.
+- Add a “last scanned at” timestamp to `/api/security/status` and badge tooltip.
+- Add optional endpoint to trigger non-blocking scan job from admin UI.
 
 ### P2
-- Add stream health metrics (append success/failure counters, latency stats).
-- Add user-level filters/search in dashboard table.
+- Add trend/history of vulnerability counts for security monitoring over time.
 
 ## Next Tasks
-1. Set real S2 and Razorpay secrets in env.
-2. Fire real Razorpay + WhatsApp webhooks and confirm instant stream prepend behavior.
-3. Add Twilio signature verification to complete webhook security baseline.
+1. Upgrade vulnerable dependencies in `backend/requirements.txt` (especially critical findings).
+2. Re-run `/app/safedep_scan.sh` and verify badge becomes green when no critical issues remain.
+3. Optionally expose scan summary details in a dedicated security page.
