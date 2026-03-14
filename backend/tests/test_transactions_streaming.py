@@ -1,5 +1,8 @@
 import os
 import uuid
+import json
+import hmac
+import hashlib
 
 import pytest
 import requests
@@ -7,6 +10,12 @@ import requests
 
 # Transaction streaming + polling fallback regression tests via public URL
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL")
+RAZORPAY_SECRET = "test_razorpay_secret"
+
+
+def build_razorpay_signature(payload: dict, secret: str = RAZORPAY_SECRET) -> str:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
 
 
 @pytest.fixture(scope="session")
@@ -88,7 +97,16 @@ def test_razorpay_webhook_accepts_payload_and_logs_transaction(api_client, base_
             }
         },
     }
-    response = api_client.post(f"{base_url}/api/webhook/razorpay", json=payload)
+    body = json.dumps(payload, separators=(",", ":"))
+    signature = build_razorpay_signature(payload)
+    response = api_client.post(
+        f"{base_url}/api/webhook/razorpay",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Razorpay-Signature": signature,
+        },
+    )
     assert response.status_code == 200
 
     data = response.json()
@@ -109,6 +127,31 @@ def test_razorpay_webhook_accepts_payload_and_logs_transaction(api_client, base_
     assert recent.status_code == 200
     rows = recent.json().get("transactions", [])
     assert any(row.get("id") == tx["id"] for row in rows)
+
+
+def test_razorpay_webhook_rejects_invalid_signature(api_client, base_url):
+    payload = {
+        "event": "payment.captured",
+        "account_id": "acc_TEST_INVALID",
+        "payload": {
+            "payment": {
+                "entity": {
+                    "amount": 120000,
+                    "email": "invalid-sig@example.com",
+                }
+            }
+        },
+    }
+    body = json.dumps(payload, separators=(",", ":"))
+    response = api_client.post(
+        f"{base_url}/api/webhook/razorpay",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Razorpay-Signature": "invalid_signature",
+        },
+    )
+    assert response.status_code == 401
 
 
 def test_transactions_recent_returns_latest_with_limit(api_client, base_url):

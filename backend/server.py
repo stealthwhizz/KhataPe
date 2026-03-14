@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, Form
+from fastapi import FastAPI, APIRouter, Form, HTTPException, Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,6 +6,8 @@ import os
 import logging
 import re
 import json
+import hmac
+import hashlib
 import requests
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
@@ -173,6 +175,11 @@ def push_transaction_to_s2(tx: Dict[str, Any]) -> None:
         logger.warning("S2 append failed: %s", exc)
 
 
+def verify_razorpay_signature(raw_body: bytes, signature: str, secret: str) -> bool:
+    expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
 def normalize_amount(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -327,7 +334,24 @@ async def webhook_whatsapp(
 
 @api_router.post("/webhook/razorpay")
 @app.post("/webhook/razorpay")
-async def webhook_razorpay(payload: Dict[str, Any]):
+async def webhook_razorpay(request: Request):
+    webhook_secret = os.getenv("RAZORPAY_WEBHOOK_SECRET")
+    if not webhook_secret:
+        raise HTTPException(status_code=503, detail="Razorpay webhook secret not configured")
+
+    signature = request.headers.get("X-Razorpay-Signature", "")
+    if not signature:
+        raise HTTPException(status_code=401, detail="Missing Razorpay signature")
+
+    raw_body = await request.body()
+    if not verify_razorpay_signature(raw_body, signature, webhook_secret):
+        raise HTTPException(status_code=401, detail="Invalid Razorpay signature")
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8") or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+
     event_name = payload.get("event", "unknown")
     payment_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
 

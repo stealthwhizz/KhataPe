@@ -1,51 +1,59 @@
-# PRD: WhatsApp Invoice Image Parsing with Unsiloed
+# PRD: Live Transaction Streaming with S2 + Webhook Hardening
 
 ## Original Problem Statement
-Add invoice image parsing to the existing WhatsApp webhook.
-When a Twilio WhatsApp message comes in with an image attachment (NumMedia > 0), call the Unsiloed AI API before anything else to extract invoice fields.
-Wire it into /webhook/whatsapp and pass amount/payer into log_transaction() and GST calculator.
-Add UNSILOED_KEY to .env. If Unsiloed fails or returns no amount, fall back to parsing raw message text as before.
+Add real-time transaction streaming using S2.dev.
+Whenever a webhook fires (Razorpay payment captured OR WhatsApp invoice parsed), push a live transaction event so the dashboard updates instantly without waiting for the 5-second poll.
+Call push logic in both `/webhook/razorpay` and `/webhook/whatsapp` right after `log_transaction()`.
+In React dashboard, subscribe to live stream and prepend rows instantly while keeping 5-second polling fallback.
+Add `S2_AUTH_TOKEN` and `S2_BASIN=gst-transactions` placeholders in env.
 
 ## Architecture Decisions
-- Implemented webhook processing in `backend/server.py` with both routes:
-  - `/webhook/whatsapp` (direct backend path)
-  - `/api/webhook/whatsapp` (router-prefixed path for external app URL testing)
-- Added `parse_invoice_image()` using `requests.post` to Unsiloed extraction endpoint and env key `UNSILOED_KEY`.
-- Added resilient fallback flow:
-  1) If image media exists, try Unsiloed extraction first.
-  2) If API fails or amount missing, parse raw message text.
-- Added `log_transaction()` persistence to MongoDB and `calculate_gst()` calculation.
-- Added helper parsing utilities for amount normalization and text extraction.
+- Kept existing stack as requested: **Python FastAPI backend + React frontend**.
+- Added backend S2 integration with resilient behavior:
+  - Initialize stream at startup (`transactions` stream)
+  - Push event payload after successful transaction logging in both webhooks
+  - Never break webhook processing if S2 is unavailable or token is empty
+- Added new Razorpay webhook route and hardened it with signature verification (`X-Razorpay-Signature` + `RAZORPAY_WEBHOOK_SECRET`).
+- Added polling API `/api/transactions/recent` for dashboard fallback.
+- Frontend dashboard now combines:
+  - live subscription path via S2 SDK client utility
+  - 5-second polling fallback + manual refresh
 
 ## What’s Implemented
-- `UNSILOED_KEY` added to `backend/.env`.
-- New invoice extraction helper:
-  - Calls `https://api.unsiloed.ai/v1/extraction`
-  - Extract fields: amount, payer, date, gstin
-- WhatsApp webhook endpoint now:
-  - Reads `NumMedia`, `MediaUrl0`, `MediaContentType0`, `Body`
-  - Calls Unsiloed first when image present
-  - Falls back to raw text parsing on Unsiloed failure/no amount
-  - Logs transaction and returns GST summary in response
-- Verified via curl on external API URL that:
-  - Text-only flow works
-  - Image flow with missing key safely falls back to text parsing
+- Backend (`/app/backend/server.py`)
+  - Added S2 helpers: `init_s2_stream()`, `push_transaction_to_s2()`
+  - Added `verify_razorpay_signature()` and secure Razorpay webhook validation
+  - Added `/api/webhook/razorpay` + `/webhook/razorpay`
+  - Updated WhatsApp webhook to push stream events post-logging
+  - Added `/api/transactions/recent?limit=` endpoint
+  - Unified transaction persistence into `db.transactions`
+- Env updates
+  - `backend/.env`: `S2_AUTH_TOKEN`, `S2_BASIN`, `RAZORPAY_WEBHOOK_SECRET`
+  - `frontend/.env`: `REACT_APP_S2_AUTH_TOKEN`, `REACT_APP_S2_BASIN`
+- Frontend
+  - Added S2 stream utility: `/app/frontend/src/lib/stream.js`
+  - Replaced starter UI with live transactions dashboard in `/app/frontend/src/App.js`
+  - Added responsive styling in `/app/frontend/src/App.css`
+  - Added required `data-testid` attributes on interactive and critical UI elements
+- Tests
+  - Existing and added pytest suites pass (11 total)
+  - Verified valid and invalid Razorpay signature behavior via live curl checks
+  - Verified dashboard rendering and polling fallback in browser screenshot flow
 
 ## Prioritized Backlog
 ### P0
-- Set real `UNSILOED_KEY` in backend env for production extraction.
-- Validate end-to-end with actual Twilio WhatsApp image payloads.
+- Replace placeholder secrets with production values (`S2_AUTH_TOKEN`, `RAZORPAY_WEBHOOK_SECRET`).
+- Validate true end-to-end S2 live delivery using a valid token and real webhook traffic.
 
 ### P1
-- Improve payer extraction regex to avoid over-capturing long trailing text.
-- Add webhook signature verification for Twilio security.
-- Add response formatting compatible with TwiML if required by upstream flow.
+- Add WhatsApp/Twilio signature validation parity with Razorpay hardening.
+- Add dedupe key strategy across sources for strict idempotency under retries.
 
 ### P2
-- Add structured audit logs (extraction latency, failure reasons, fallback cause).
-- Add automated tests for: image success, image failure fallback, no-media text parse.
+- Add stream health metrics (append success/failure counters, latency stats).
+- Add user-level filters/search in dashboard table.
 
 ## Next Tasks
-1. Configure live Unsiloed key and test with real invoice images.
-2. Tighten parsing quality and add test coverage for edge cases.
-3. Add Twilio request validation and harden webhook reliability.
+1. Set real S2 and Razorpay secrets in env.
+2. Fire real Razorpay + WhatsApp webhooks and confirm instant stream prepend behavior.
+3. Add Twilio signature verification to complete webhook security baseline.
