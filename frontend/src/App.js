@@ -62,6 +62,8 @@ function App() {
   const [streamStatus, setStreamStatus] = useState("connecting");
   const [lastUpdatedAt, setLastUpdatedAt] = useState("");
   const [error, setError] = useState("");
+  const [securityStatus, setSecurityStatus] = useState("red");
+  const [criticalCount, setCriticalCount] = useState(0);
 
   const fetchTransactions = useCallback(async () => {
     try {
@@ -80,6 +82,22 @@ function App() {
     const timer = setInterval(fetchTransactions, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [fetchTransactions]);
+
+  useEffect(() => {
+    const fetchSecurityStatus = async () => {
+      try {
+        const response = await axios.get(`${API}/security/status`);
+        const nextStatus = response.data?.status === "green" ? "green" : "red";
+        setSecurityStatus(nextStatus);
+        setCriticalCount(Number(response.data?.critical_count || 0));
+      } catch (_err) {
+        setSecurityStatus("red");
+        setCriticalCount(0);
+      }
+    };
+
+    fetchSecurityStatus();
+  }, []);
 
   useEffect(() => {
     let cleanup = null;
@@ -196,6 +214,16 @@ function App() {
           </tbody>
         </table>
       </div>
+
+      <footer className="dashboard-footer" data-testid="dashboard-security-footer">
+        <span
+          className={`security-badge ${securityStatus === "green" ? "green" : "red"}`}
+          data-testid="dashboard-security-badge"
+        >
+          Security {securityStatus === "green" ? "Green" : "Red"}
+          {securityStatus === "red" ? ` (${criticalCount} critical)` : ""}
+        </span>
+      </footer>
     </div>
   );
 }
