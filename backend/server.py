@@ -125,13 +125,20 @@ def parse_transaction_text(raw_message: str) -> Dict[str, Optional[str]]:
     message = raw_message or ""
 
     amount_match = re.search(r"(?i)(?:₹|rs\.?|inr)?\s*([0-9]+(?:\.[0-9]{1,2})?)", message)
-    payer_match = re.search(r"(?i)(?:payer|from)\s*[:\-]?\s*([a-zA-Z0-9 .&_-]{2,50})", message)
+    payer_match = re.search(r"(?i)(?:payer|from)\s*[:\-]?\s*([^,\n]+)", message)
     date_match = re.search(r"\b(\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4})\b", message)
     gstin_match = re.search(r"\b\d{2}[A-Z]{5}\d{4}[A-Z]\d[Z][A-Z0-9]\b", message)
 
+    payer = payer_match.group(1).strip() if payer_match else None
+    if payer:
+        payer = re.split(r"(?i)\b(?:on|date|gstin|amount|rs\.?|inr)\b", payer)[0]
+        payer = re.sub(r"\b(\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4})\b.*$", "", payer).strip(" .,:-_")
+        if not payer:
+            payer = None
+
     return {
         "amount": amount_match.group(1) if amount_match else None,
-        "payer": payer_match.group(1).strip() if payer_match else None,
+        "payer": payer,
         "date": date_match.group(1) if date_match else None,
         "gstin": gstin_match.group(0) if gstin_match else None,
     }

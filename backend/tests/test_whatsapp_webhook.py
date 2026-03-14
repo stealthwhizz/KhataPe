@@ -115,7 +115,7 @@ def test_whatsapp_image_fallback_to_text_when_unsiloed_unavailable(api_client, b
 
     transaction = data.get("transaction", {})
     assert transaction.get("amount") == 890.0
-    assert transaction.get("payer") == "Bob on 12"
+    assert transaction.get("payer") == "Bob"
     assert transaction.get("date") == "12/02/2026"
     assert transaction.get("gstin") == "29ABCDE1234F1Z5"
     assert transaction.get("raw_invoice") is None
