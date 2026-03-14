@@ -5,6 +5,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import re
+import json
 import requests
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
@@ -26,6 +27,7 @@ app = FastAPI()
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
+S2_STREAM = "transactions"
 
 
 # Define Models
@@ -103,6 +105,74 @@ def parse_invoice_image(image_url: str) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def get_s2_config() -> Optional[Dict[str, str]]:
+    auth_token = os.getenv("S2_AUTH_TOKEN")
+    basin = os.getenv("S2_BASIN")
+    if not auth_token or not basin:
+        return None
+
+    return {
+        "auth_token": auth_token,
+        "basin": basin,
+        "base_url": f"https://{basin}.b.aws.s2.dev/v1",
+    }
+
+
+def init_s2_stream() -> None:
+    config = get_s2_config()
+    if not config:
+        logger.info("S2 stream init skipped: missing S2_AUTH_TOKEN or S2_BASIN")
+        return
+
+    try:
+        response = requests.put(
+            f"{config['base_url']}/streams/{S2_STREAM}",
+            headers={"Authorization": f"Bearer {config['auth_token']}"},
+            json={},
+            timeout=10,
+        )
+        if response.status_code in (200, 201):
+            logger.info("S2 stream ready: %s", S2_STREAM)
+            return
+
+        if response.status_code in (400, 409) and "already exists" in response.text.lower():
+            return
+
+        response.raise_for_status()
+    except Exception as exc:
+        logger.warning("Unable to initialize S2 stream: %s", exc)
+
+
+def push_transaction_to_s2(tx: Dict[str, Any]) -> None:
+    config = get_s2_config()
+    if not config:
+        return
+
+    event_payload = {
+        **tx,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    payload = {
+        "records": [
+            {
+                "body": json.dumps(event_payload),
+                "headers": ["Content-Type: application/json"],
+            }
+        ]
+    }
+
+    try:
+        response = requests.post(
+            f"{config['base_url']}/streams/{S2_STREAM}/records",
+            headers={"Authorization": f"Bearer {config['auth_token']}"},
+            json=payload,
+            timeout=10,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        logger.warning("S2 append failed: %s", exc)
+
+
 def normalize_amount(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -166,7 +236,7 @@ async def log_transaction(
         "raw_invoice": raw_invoice,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-    await db.whatsapp_transactions.insert_one(transaction.copy())
+    await db.transactions.insert_one(transaction.copy())
     return transaction
 
 
@@ -236,6 +306,16 @@ async def webhook_whatsapp(
         raw_invoice=invoice or None,
     )
     gst = calculate_gst(amount)
+    push_transaction_to_s2(
+        {
+            "payer": payer or "Unknown",
+            "amount": amount or 0.0,
+            "gst": gst.get("gst_amount") or 0.0,
+            "net": gst.get("total_amount") if gst.get("total_amount") is not None else (amount or 0.0),
+            "source": source,
+            "transaction_id": transaction["id"],
+        }
+    )
 
     return {
         "status": "processed",
@@ -243,6 +323,72 @@ async def webhook_whatsapp(
         "transaction": transaction,
         "gst": gst,
     }
+
+
+@api_router.post("/webhook/razorpay")
+@app.post("/webhook/razorpay")
+async def webhook_razorpay(payload: Dict[str, Any]):
+    event_name = payload.get("event", "unknown")
+    payment_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
+
+    amount_paise = payment_entity.get("amount")
+    amount: Optional[float] = None
+    if isinstance(amount_paise, (int, float)):
+        amount = round(float(amount_paise) / 100, 2)
+
+    payer = (
+        payment_entity.get("email")
+        or payment_entity.get("contact")
+        or payload.get("account_id")
+        or "Razorpay Payer"
+    )
+
+    created_at = payment_entity.get("created_at")
+    date: Optional[str] = None
+    if isinstance(created_at, (int, float)):
+        date = datetime.fromtimestamp(created_at, timezone.utc).isoformat()
+
+    transaction = await log_transaction(
+        sender="razorpay",
+        amount=amount,
+        payer=payer,
+        date=date,
+        gstin=None,
+        raw_message=json.dumps(payload),
+        source=f"razorpay:{event_name}",
+        raw_invoice=None,
+    )
+    gst = calculate_gst(amount)
+    push_transaction_to_s2(
+        {
+            "payer": payer,
+            "amount": amount or 0.0,
+            "gst": gst.get("gst_amount") or 0.0,
+            "net": gst.get("total_amount") if gst.get("total_amount") is not None else (amount or 0.0),
+            "source": "razorpay",
+            "transaction_id": transaction["id"],
+            "event": event_name,
+        }
+    )
+
+    return {
+        "status": "processed",
+        "event": event_name,
+        "transaction": transaction,
+        "gst": gst,
+    }
+
+
+@api_router.get("/transactions/recent")
+async def get_recent_transactions(limit: int = 50):
+    safe_limit = max(1, min(limit, 200))
+    transactions = await db.transactions.find({}, {"_id": 0}).sort("timestamp", -1).limit(safe_limit).to_list(safe_limit)
+    return {"transactions": transactions}
+
+
+@app.on_event("startup")
+async def startup_s2_stream():
+    init_s2_stream()
 
 
 # Include the router in the main app
